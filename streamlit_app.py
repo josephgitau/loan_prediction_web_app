@@ -64,13 +64,17 @@ def preprocess_data(df):
     processed_df['Loan_Amount_Term'].fillna(processed_df['Loan_Amount_Term'].mode()[0], inplace=True)
     processed_df['Credit_History'].fillna(processed_df['Credit_History'].mode()[0], inplace=True)
     
-    # Handle missing values in target variable (Loan_Status)
-    if 'Loan_Status' in processed_df.columns and processed_df['Loan_Status'].isnull().any():
-        # Drop rows with missing target values or fill with mode
-        # Option 1: Drop rows with missing target (better for model accuracy)
-        processed_df.dropna(subset=['Loan_Status'], inplace=True)
-        # Option 2: Fill with mode (alternative approach)
-        # processed_df['Loan_Status'].fillna(processed_df['Loan_Status'].mode()[0], inplace=True)
+    # Ensure Loan_Status is properly preserved
+    # Convert 'Y'/'N' values to 1/0 explicitly to avoid missing values later
+    if 'Loan_Status' in processed_df.columns:
+        # Handle different formats of Loan_Status
+        if processed_df['Loan_Status'].dtype == 'object':
+            # Try mapping common values
+            status_map = {'Y': 1, 'N': 0, 'Yes': 1, 'No': 0, 'Approved': 1, 'Rejected': 0}
+            processed_df['Loan_Status'] = processed_df['Loan_Status'].map(status_map)
+        else:
+            # If already numeric, ensure it's 0 or 1
+            processed_df['Loan_Status'] = processed_df['Loan_Status'].astype(int)
     
     # Encode categorical features
     encoder = OrdinalEncoder()
@@ -166,10 +170,6 @@ def data_analysis_page():
     # Display sample data
     st.subheader("Sample Data")
     st.dataframe(df.head())
-
-    # Display data columns
-    st.subheader("Data Columns")
-    st.dataframe(df.columns)
     
     # Dataset info
     st.subheader("Dataset Information")
@@ -335,8 +335,10 @@ def model_training_page():
         
         if st.button("Preprocess Data"):
             with st.spinner("Preprocessing data..."):
-                # Check if Loan_Status column has values before preprocessing
-                if df['Loan_Status'].isnull().all():
+                # Check if Loan_Status column exists and has values before preprocessing
+                if 'Loan_Status' not in df.columns:
+                    st.error("Error: No 'Loan_Status' column found in the dataset. Cannot train a model.")
+                elif df['Loan_Status'].isnull().all():
                     st.error("Error: All values in the target column (Loan_Status) are missing. Cannot train a model.")
                 else:
                     # First, check how many non-null values we have in Loan_Status
@@ -359,38 +361,90 @@ def model_training_page():
         st.subheader("Preprocessed Data")
         st.dataframe(st.session_state.preprocessed_df.head())
         
+         # Add option to show model training data
+        with st.expander("Show Model Training Data"):
+            # Prepare data for modeling
+            X = st.session_state.preprocessed_df.copy()
+            
+            # Handle the target variable properly
+            if 'Loan_Status' in X.columns:
+                y = X['Loan_Status']
+                X = X.drop('Loan_Status', axis=1)
+
+                # Display distribution of target variable
+                st.subheader("Target Variable Distribution")
+                fig, ax = plt.subplots(figsize=(8, 4))
+                y_counts = y.value_counts()
+                sns.barplot(x=y_counts.index, y=y_counts.values, ax=ax)
+                plt.title('Distribution of Loan Status')
+                plt.xticks([0, 1], ['Rejected (0)', 'Approved (1)'])
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                # Check for any null values in the target variable
+                null_count = y.isnull().sum()
+                if null_count > 0:
+                    st.warning(f"Warning: {null_count} missing values detected in the target variable.")
+            else:
+                st.error("Error: No 'Loan_Status' column found in the preprocessed data.")
+                y = None
+
+            # Remove Loan_ID if it exists
+            if 'Loan_ID' in X.columns:
+                X = X.drop('Loan_ID', axis=1)
+            
+            # Show features for training
+            st.subheader("Features for Model Training")
+            st.dataframe(X.head())
+            st.write(f"Shape of feature data: {X.shape}")
+
+            # Check for any remaining null values in features
+            null_cols = X.columns[X.isnull().any()].tolist()
+            if null_cols:
+                st.warning(f"Warning: Null values detected in these columns: {', '.join(null_cols)}")
+
+            # Display training/test split preview
+            if y is not None and not y.isnull().all():
+                test_size = st.slider("Test Set Size (%)", 10, 40, 20, key="preview_split_slider") / 100
+                try:
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"Training set: {X_train.shape[0]} samples")
+                        st.write(f"Approved loans: {sum(y_train == 1)} ({sum(y_train == 1)/len(y_train):.1%})")
+                    with col2:
+                        st.write(f"Test set: {X_test.shape[0]} samples")
+                        st.write(f"Approved loans: {sum(y_test == 1)} ({sum(y_test == 1)/len(y_test):.1%})")
+                except Exception as e:
+                    st.error(f"Error splitting data: {str(e)}")
+                    st.write("Please check your data for issues.")
+        
         # Model training
         st.subheader("Model Training")
         
         # Prepare data for modeling - handle the case where Loan_ID might not exist
         X = st.session_state.preprocessed_df.copy()
         if 'Loan_Status' in X.columns:
+            y = X['Loan_Status']
             X = X.drop('Loan_Status', axis=1)
+        else:
+            st.error("Error: No 'Loan_Status' column found in preprocessed data. Cannot train models.")
+            return
+        
+        # Remove Loan_ID if it exists
         if 'Loan_ID' in X.columns:
             X = X.drop('Loan_ID', axis=1)
         
-        # Fix for ValueError: Input y contains NaN
-        # Map Loan_Status values and ensure no NaN values
-        try:
-            # First attempt: try mapping Y/N values
-            y = st.session_state.preprocessed_df['Loan_Status'].map({'Y': 1, 'N': 0})
-        except:
-            try:
-                # Second attempt: try direct conversion if already numeric
-                y = st.session_state.preprocessed_df['Loan_Status'].astype(int)
-            except:
-                # Last resort: factorize the values (works with any data type)
-                y, _ = pd.factorize(st.session_state.preprocessed_df['Loan_Status'])
-        
-        # Check for any remaining NaN values and drop them
+        # Check for any remaining NaN values in y and drop those rows
         valid_indices = ~y.isna()
         if not valid_indices.all():
             missing_count = (~valid_indices).sum()
             if missing_count == len(y):
                 st.error(f"Error: All {missing_count} target values are missing. Cannot train a model.")
                 return
-            else:
-                st.warning(f"Removed {missing_count} rows with missing target values")
+            elif missing_count > 0:
+                st.warning(f"Removing {missing_count} rows with missing target values")
                 X = X[valid_indices]
                 y = y[valid_indices]
         
@@ -398,7 +452,7 @@ def model_training_page():
         if len(X) < 10:  # Arbitrary minimum threshold
             st.error(f"Error: Only {len(X)} samples remain after preprocessing. Need more data to train a model.")
             return
-        
+
         # Feature importance analysis
         with st.expander("Feature Importance Analysis"):
             try:
@@ -433,7 +487,7 @@ def model_training_page():
                 st.write(y.head())
         
         # Model training options
-        test_size = st.slider("Test Set Size (%)", 10, 40, 20) / 100
+        test_size = st.slider("Test Set Size (%)", 10, 40, 20, key="training_split_slider") / 100
         
         if st.button("Train Models"):
             with st.spinner("Training models..."):
@@ -484,47 +538,75 @@ def model_training_page():
             # Detailed evaluation of best model
             with st.expander("Detailed Evaluation of Best Model"):
                 # Prepare data for evaluation
-                X = st.session_state.preprocessed_df.drop(['Loan_Status', 'Loan_ID'], axis=1)
-                y = st.session_state.preprocessed_df['Loan_Status'].map({'Y': 1, 'N': 0})
+                X = st.session_state.preprocessed_df.drop(['Loan_Status'], axis=1)
+                if 'Loan_ID' in X.columns:
+                    X = X.drop('Loan_ID', axis=1)
+                
+                # Get the target and ensure no NaN values
+                y = st.session_state.preprocessed_df['Loan_Status']
+                
+                # Remove rows with NaN in the target variable
+                valid_mask = ~y.isna()
+                if not valid_mask.all():
+                    nan_count = (~valid_mask).sum()
+                    st.warning(f"Removing {nan_count} rows with NaN values in target variable")
+                    X = X[valid_mask]
+                    y = y[valid_mask]
+                
+                # Split data
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
                 
                 # Make predictions
                 y_pred = best_model.predict(X_test)
                 y_prob = best_model.predict_proba(X_test)[:, 1]
                 
-                # Classification report
+                # Classification report - check for NaN values
                 st.write("**Classification Report:**")
-                report = classification_report(y_test, y_pred, output_dict=True)
-                st.dataframe(pd.DataFrame(report).transpose())
+                try:
+                    # Double check for NaN values before generating report
+                    if np.isnan(y_test).any() or np.isnan(y_pred).any():
+                        st.error("Cannot generate classification report: NaN values present in data")
+                    else:
+                        report = classification_report(y_test, y_pred, output_dict=True)
+                        st.dataframe(pd.DataFrame(report).transpose())
+                except Exception as e:
+                    st.error(f"Error generating classification report: {str(e)}")
+                    st.write("Summary metrics:")
+                    try:
+                        accuracy = (y_pred == y_test).mean()
+                        st.metric("Accuracy", f"{accuracy:.4f}")
+                    except:
+                        st.write("Unable to calculate metrics due to data issues")
                 
                 # Confusion Matrix
                 st.write("**Confusion Matrix:**")
-                cm = confusion_matrix(y_test, y_pred)
-                fig, ax = plt.subplots(figsize=(8, 6))
-                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
-                plt.xlabel('Predicted')
-                plt.ylabel('Actual')
-                plt.title('Confusion Matrix')
-                st.pyplot(fig)
+                try:
+                    cm = confusion_matrix(y_test, y_pred)
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
+                    plt.xlabel('Predicted')
+                    plt.ylabel('Actual')
+                    plt.title('Confusion Matrix')
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"Error generating confusion matrix: {str(e)}")
                 
-                # ROC Curve
+                # ROC Curve - handle potential errors
                 st.write("**ROC Curve:**")
-                fpr, tpr, _ = roc_curve(y_test, y_prob)
-                roc_auc = auc(fpr, tpr)
-                
-                fig, ax = plt.subplots(figsize=(8, 6))
-                plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.3f}')
-                plt.plot([0, 1], [0, 1], 'k--')
-                plt.xlabel('False Positive Rate')
-                plt.ylabel('True Positive Rate')
-                plt.title('ROC Curve')
-                plt.legend(loc='lower right')
-                st.pyplot(fig)
-            
-            # Save model option
-            if st.button("Save Best Model for Prediction"):
-                st.session_state.best_model = best_model
-                st.success(f"The {best_model_name} model has been saved for prediction!")
+                try:
+                    fpr, tpr, _ = roc_curve(y_test, y_prob)
+                    roc_auc = auc(fpr, tpr)
+                    
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.3f}')
+                    plt.plot([0, 1], [0, 1], 'k--')
+                    plt.xlabel('False Positive Rate')
+                    plt.ylabel('True Positive Rate')
+                    plt.title('ROC Curve')
+                    plt.legend(loc='lower right')
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"Error generating ROC curve: {str(e)}")
 
 # Prediction Page
 def prediction_page():
